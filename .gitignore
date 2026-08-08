@@ -1,0 +1,23 @@
+# ModelSim / QuestaSim
+work/
+transcript
+transcript.*
+vsim.wlf
+*.wlf
+vish_stacktrace.vstf
+.modelsim
+wlf*
+modelsim.ini
+
+# Vivado
+*.jou
+*.log
+*.str
+.Xil/
+xsim.dir/
+*.pb
+*.wdb
+webtalk*.jou
+webtalk*.log
+vivado*.jou
+vivado*.log
