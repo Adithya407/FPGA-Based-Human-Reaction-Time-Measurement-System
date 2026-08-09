@@ -17,8 +17,9 @@ Status legend: Not Started | In Progress | Passing | Failing
 
 ## Simulation Tools
 
-- **ModelSim:** `sim/run_modelsim.do`
-- **Vivado (non-project mode):** `sim/run_vivado_sim.tcl`
+- **ModelSim:** `sim/run_modelsim.do` — compiles/runs every module TB + top_tb (verified working).
+- **Vivado (xsim):** `sim/run_vivado_sim.tcl` — project-mode script; creates/opens a sim-only project, sets `top_tb` as sim top, runs behavioral sim until `$finish` (covers all 3 scenarios), adds top-level + key internal signals (FSM state, lfsr_value, ms_elapsed) to the waveform and saves a `.wcfg`. Run GUI: `vivado -source sim/run_vivado_sim.tcl`; batch: `vivado -mode batch -source sim/run_vivado_sim.tcl`.
+  - **Must be run as BEHAVIORAL simulation** (the script pins `launch_simulation -mode behavioral`). The testbench uses hierarchical references into DUT internals (`dut.ms_elapsed`, `dut.u_fsm.state`); these RTL nets don't exist in a post-synthesis/post-implementation timing or functional sim, which fails with e.g. `'ms_elapsed' is not declared under prefix 'dut'`. In the GUI, use *Run Simulation → Run Behavioral Simulation* (not post-synthesis).
 
 ## Log
 
