@@ -27,14 +27,6 @@
 // button and start_button are treated as rising-edge events (the button input
 // is expected to come from the debouncer), so holding a button does not
 // produce repeated triggers.
-//
-// STRUCTURAL implementation. The current state lives in a 3-bit `registerN`
-// (the net `state` is kept for the testbench's hierarchical reference). It is
-// decoded one-hot; the next state is a per-source 2:1 mux network selected by
-// that one-hot; the timer/rand_delay/result_ms are `registerN`s fed by
-// adder/comparator/mux blocks; and the Moore outputs are gate primitives off
-// the one-hot state. The lfsr_value * WAIT_SCALE product uses the structural
-// shift-add multiplier `mul_const8`. See primitives.v for the building blocks.
 // -----------------------------------------------------------------------------
 
 module fsm_controller #(
@@ -51,13 +43,13 @@ module fsm_controller #(
     input  wire [MS_WIDTH-1:0] ms_elapsed,     // elapsed time from counter
     input  wire                start_button,   // begin a trial
 
-    output wire                led_stimulus,
-    output wire                counter_start,
-    output wire                counter_stop,
-    output wire                counter_reset,
-    output wire                lfsr_enable,
-    output wire                false_start_flag,
-    output wire                display_enable
+    output reg                 led_stimulus,
+    output reg                 counter_start,
+    output reg                 counter_stop,
+    output reg                 counter_reset,
+    output reg                 lfsr_enable,
+    output reg                 false_start_flag,
+    output reg                 display_enable
 );
 
     // State encoding
@@ -68,194 +60,99 @@ module fsm_controller #(
                      RESULT      = 3'd4,
                      FALSE_START = 3'd5;
 
-    // Timing constants as 32-bit vectors (for the comparators / adders).
-    localparam [31:0] MIN_WAIT_C    = MIN_WAIT_CLKS;
-    localparam [31:0] RESULT_HOLD_C = RESULT_HOLD_CLKS;
-    localparam [31:0] FALSE_HOLD_C  = FALSE_HOLD_CLKS;
+    reg [2:0]  state, next_state;
+    reg [31:0] timer;        // cycles spent in the current state
+    reg [31:0] rand_delay;   // latched random-wait target
+    reg [MS_WIDTH-1:0] result_ms;  // latched reaction time
 
-    // ------------------------------------------------------------------------
-    // State register (net `state` is referenced hierarchically by the TB).
-    // ------------------------------------------------------------------------
-    wire [2:0] state;
-    wire [2:0] next_state;
-    registerN #(.WIDTH(3), .RESET_VAL(IDLE)) u_state (
-        .clk(clk), .rst(reset), .en(1'b1), .d(next_state), .q(state)
-    );
+    // Edge detection for the (debounced) inputs
+    reg        button_prev, start_prev;
+    wire       button_rise = button       & ~button_prev;
+    wire       start_rise  = start_button & ~start_prev;
 
-    // One-hot decode of the current state: soh[0]=IDLE .. soh[5]=FALSE_START.
-    wire [5:0] soh;
-    onehot_decoder #(.SEL_WIDTH(3), .OUT_WIDTH(6)) u_sdec (.sel(state), .onehot(soh));
+    // --- Next-state logic ---------------------------------------------------
+    always @* begin
+        next_state = state;
+        case (state)
+            IDLE:        if (start_rise)                  next_state = RANDOM_WAIT;
+            RANDOM_WAIT: if (button_rise)                 next_state = FALSE_START;
+                         else if (timer >= rand_delay)    next_state = STIMULUS;
+            STIMULUS:                                     next_state = MEASURING;
+            MEASURING:   if (button_rise)                 next_state = RESULT;
+            RESULT:      if (start_rise ||
+                             timer >= RESULT_HOLD_CLKS)   next_state = IDLE;
+            FALSE_START: if (timer >= FALSE_HOLD_CLKS)    next_state = IDLE;
+            default:                                      next_state = IDLE;
+        endcase
+    end
 
-    // ------------------------------------------------------------------------
-    // Rising-edge detection on the (debounced) inputs.
-    // ------------------------------------------------------------------------
-    wire button_prev, start_prev;
-    dffr #(1'b0) u_bprev (.clk(clk), .rst(reset), .en(1'b1), .d(button),       .q(button_prev));
-    dffr #(1'b0) u_sprev (.clk(clk), .rst(reset), .en(1'b1), .d(start_button), .q(start_prev));
-
-    wire nbp, nsp, button_rise, start_rise;
-    not (nbp, button_prev);  and (button_rise, button,       nbp);
-    not (nsp, start_prev);   and (start_rise,  start_button, nsp);
-
-    // ------------------------------------------------------------------------
-    // Timer comparisons ( timer >= threshold ).
-    // ------------------------------------------------------------------------
-    wire [31:0] timer;
-    wire [31:0] rand_delay;
-    wire        tge_rand, tge_result, tge_false;
-    geN #(.WIDTH(32)) u_ge_rand   (.a(timer), .b(rand_delay),    .ge(tge_rand));
-    geN #(.WIDTH(32)) u_ge_result (.a(timer), .b(RESULT_HOLD_C), .ge(tge_result));
-    geN #(.WIDTH(32)) u_ge_false  (.a(timer), .b(FALSE_HOLD_C),  .ge(tge_false));
-
-    // ------------------------------------------------------------------------
-    // Per-source next-state candidates.
-    // ------------------------------------------------------------------------
-    // IDLE       : start_rise ? RANDOM_WAIT : IDLE
-    wire [2:0] ns_idle;
-    mux2N #(3) u_ns_idle (.a(IDLE), .b(RANDOM_WAIT), .sel(start_rise), .y(ns_idle));
-
-    // RANDOM_WAIT: button_rise ? FALSE_START : (tge_rand ? STIMULUS : RANDOM_WAIT)
-    wire [2:0] ns_rw_inner, ns_rw;
-    mux2N #(3) u_ns_rw_i (.a(RANDOM_WAIT), .b(STIMULUS),    .sel(tge_rand),    .y(ns_rw_inner));
-    mux2N #(3) u_ns_rw   (.a(ns_rw_inner), .b(FALSE_START), .sel(button_rise), .y(ns_rw));
-
-    // STIMULUS   : always -> MEASURING
-    wire [2:0] ns_stim;
-    assign ns_stim = MEASURING;   // pure wiring (constant)
-
-    // MEASURING  : button_rise ? RESULT : MEASURING
-    wire [2:0] ns_meas;
-    mux2N #(3) u_ns_meas (.a(MEASURING), .b(RESULT), .sel(button_rise), .y(ns_meas));
-
-    // RESULT     : (start_rise | tge_result) ? IDLE : RESULT
-    wire res_exit;
-    or (res_exit, start_rise, tge_result);
-    wire [2:0] ns_result;
-    mux2N #(3) u_ns_res (.a(RESULT), .b(IDLE), .sel(res_exit), .y(ns_result));
-
-    // FALSE_START: tge_false ? IDLE : FALSE_START
-    wire [2:0] ns_false;
-    mux2N #(3) u_ns_false (.a(FALSE_START), .b(IDLE), .sel(tge_false), .y(ns_false));
-
-    // ------------------------------------------------------------------------
-    // Next-state select: one-hot mux over the candidates (invalid state -> 0).
-    // ------------------------------------------------------------------------
-    genvar gb;
-    generate
-        for (gb = 0; gb < 3; gb = gb + 1) begin : nsmux
-            wire t0, t1, t2, t3, t4, t5;
-            and (t0, ns_idle[gb],   soh[0]);
-            and (t1, ns_rw[gb],     soh[1]);
-            and (t2, ns_stim[gb],   soh[2]);
-            and (t3, ns_meas[gb],   soh[3]);
-            and (t4, ns_result[gb], soh[4]);
-            and (t5, ns_false[gb],  soh[5]);
-            or  (next_state[gb], t0, t1, t2, t3, t4, t5);
+    // --- State / datapath registers -----------------------------------------
+    always @(posedge clk) begin
+        if (reset) begin
+            state       <= IDLE;
+            timer       <= 32'd0;
+            rand_delay  <= 32'd0;
+            result_ms   <= {MS_WIDTH{1'b0}};
+            button_prev <= 1'b0;
+            start_prev  <= 1'b0;
         end
-    endgenerate
+        else begin
+            button_prev <= button;
+            start_prev  <= start_button;
 
-    // ------------------------------------------------------------------------
-    // Timer: cleared on any state change, otherwise counts up.
-    // ------------------------------------------------------------------------
-    wire state_eq, state_changed;
-    eqN #(3) u_st_eq (.a(state), .b(next_state), .eq(state_eq));
-    not (state_changed, state_eq);
+            // Latch a fresh random delay when a trial begins.
+            if (state == IDLE && next_state == RANDOM_WAIT)
+                rand_delay <= MIN_WAIT_CLKS + lfsr_value * WAIT_SCALE;
 
-    wire [31:0] timer_p1, timer_next;
-    wire        timer_co;
-    adderN #(.WIDTH(32)) u_tinc (
-        .a(timer), .b(32'd0), .cin(1'b1), .sum(timer_p1), .cout(timer_co)
-    );
-    mux2N #(.WIDTH(32)) u_tmux (
-        .a(timer_p1), .b(32'd0), .sel(state_changed), .y(timer_next)
-    );
-    registerN #(.WIDTH(32), .RESET_VAL(32'd0)) u_timer (
-        .clk(clk), .rst(reset), .en(1'b1), .d(timer_next), .q(timer)
-    );
+            // Latch the reaction time when the response is captured.
+            if (state == MEASURING && next_state == RESULT)
+                result_ms <= ms_elapsed;
 
-    // ------------------------------------------------------------------------
-    // rand_delay: latched on IDLE -> RANDOM_WAIT.
-    //   rand_delay = MIN_WAIT_CLKS + lfsr_value * WAIT_SCALE
-    // ------------------------------------------------------------------------
-    wire next_is_rw, latch_rand;
-    eqN #(3) u_nrw (.a(next_state), .b(RANDOM_WAIT), .eq(next_is_rw));
-    and (latch_rand, soh[0], next_is_rw);
+            // Restart the timer on every state change; otherwise count up.
+            if (state != next_state)
+                timer <= 32'd0;
+            else
+                timer <= timer + 32'd1;
 
-    wire [31:0] prod, rand_val;
-    wire        rand_co;
-    mul_const8 #(.OUTW(32), .K(WAIT_SCALE)) u_mul (.a(lfsr_value), .out(prod));
-    adderN #(.WIDTH(32)) u_radd (
-        .a(prod), .b(MIN_WAIT_C), .cin(1'b0), .sum(rand_val), .cout(rand_co)
-    );
-    registerN #(.WIDTH(32), .RESET_VAL(32'd0)) u_rand (
-        .clk(clk), .rst(reset), .en(latch_rand), .d(rand_val), .q(rand_delay)
-    );
-
-    // ------------------------------------------------------------------------
-    // result_ms: latched on MEASURING -> RESULT (mirrors the original design;
-    // captured for completeness but not driven onto an output).
-    // ------------------------------------------------------------------------
-    wire [MS_WIDTH-1:0] result_ms;
-    wire next_is_result, latch_res;
-    eqN #(3) u_nres (.a(next_state), .b(RESULT), .eq(next_is_result));
-    and (latch_res, soh[3], next_is_result);
-    registerN #(.WIDTH(MS_WIDTH), .RESET_VAL({MS_WIDTH{1'b0}})) u_result (
-        .clk(clk), .rst(reset), .en(latch_res), .d(ms_elapsed), .q(result_ms)
-    );
-
-    // ------------------------------------------------------------------------
-    // Moore outputs (functions of the one-hot state; counter_stop also gated
-    // by the response edge while MEASURING).
-    // ------------------------------------------------------------------------
-    buf (counter_reset,    soh[0]);                 // IDLE
-    or  (lfsr_enable,      soh[0], soh[1]);         // IDLE | RANDOM_WAIT
-    or  (led_stimulus,     soh[2], soh[3]);         // STIMULUS | MEASURING
-    buf (counter_start,    soh[2]);                 // STIMULUS
-    and (counter_stop,     soh[3], button_rise);    // MEASURING & response edge
-    buf (display_enable,   soh[4]);                 // RESULT
-    buf (false_start_flag, soh[5]);                 // FALSE_START
-
-endmodule
-
-
-// -----------------------------------------------------------------------------
-// mul_const8 -- structural unsigned multiply of an 8-bit value by a compile-
-//               time constant K.  out = a * K  (low OUTW bits).
-//
-// Shift-add: partial product i is (K << i) when a[i]=1, else 0 (a 2:1 mux
-// against zero). The eight partial products are summed by a chain of adderN.
-// -----------------------------------------------------------------------------
-module mul_const8 #(
-    parameter integer OUTW = 32,
-    parameter integer K    = 1
-) (
-    input  wire [7:0]      a,
-    output wire [OUTW-1:0] out
-);
-    wire [OUTW-1:0] pp  [0:7];   // partial products
-    wire [OUTW-1:0] acc [0:7];   // running sums
-    wire [7:0]      co;
-
-    genvar i;
-    generate
-        // Partial products: pp[i] = a[i] ? (K << i) : 0.
-        for (i = 0; i < 8; i = i + 1) begin : ppg
-            localparam [OUTW-1:0] KI = (K << i);
-            mux2N #(.WIDTH(OUTW)) sel (
-                .a ({OUTW{1'b0}}), .b (KI), .sel (a[i]), .y (pp[i])
-            );
+            state <= next_state;
         end
+    end
 
-        // Sum chain: acc[0] = pp[0]; acc[i] = acc[i-1] + pp[i].
-        adderN #(.WIDTH(OUTW)) a0 (
-            .a(pp[0]), .b({OUTW{1'b0}}), .cin(1'b0), .sum(acc[0]), .cout(co[0])
-        );
-        for (i = 1; i < 8; i = i + 1) begin : sumg
-            adderN #(.WIDTH(OUTW)) ad (
-                .a(acc[i-1]), .b(pp[i]), .cin(1'b0), .sum(acc[i]), .cout(co[i])
-            );
-        end
-    endgenerate
+    // --- Moore outputs ------------------------------------------------------
+    always @* begin
+        led_stimulus     = 1'b0;
+        counter_start    = 1'b0;
+        counter_stop     = 1'b0;
+        counter_reset    = 1'b0;
+        lfsr_enable      = 1'b0;
+        false_start_flag = 1'b0;
+        display_enable   = 1'b0;
 
-    assign out = acc[7];   // pure wiring (whole-word alias)
+        case (state)
+            IDLE: begin
+                counter_reset = 1'b1;   // clear any previous measurement
+                lfsr_enable   = 1'b1;   // keep the LFSR shifting
+            end
+            RANDOM_WAIT: begin
+                lfsr_enable = 1'b1;
+            end
+            STIMULUS: begin
+                led_stimulus  = 1'b1;
+                counter_start = 1'b1;   // one-cycle kick -> counter begins
+            end
+            MEASURING: begin
+                led_stimulus = 1'b1;
+                if (button_rise)
+                    counter_stop = 1'b1;  // freeze/latch on the response press
+            end
+            RESULT: begin
+                display_enable = 1'b1;
+            end
+            FALSE_START: begin
+                false_start_flag = 1'b1;
+            end
+            default: ;
+        endcase
+    end
+
 endmodule
