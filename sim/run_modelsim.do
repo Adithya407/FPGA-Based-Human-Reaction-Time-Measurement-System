@@ -9,6 +9,11 @@ if {[file exists work]} { vdel -all }
 vlib work
 vmap work work
 
+# --- Structural primitives library (needed by every RTL module) -------------
+# Compiled once into `work`; all modules below instantiate these building
+# blocks (dffr, registerN, adderN, mux2N, eqN, geN, gtN, onehot_decoder, ...).
+vlog ../rtl/primitives.v
+
 # --- LFSR -------------------------------------------------------------------
 vlog ../rtl/lfsr.v
 vlog ../tb/lfsr_tb.v
