@@ -18,6 +18,11 @@
 //   FSM.display_enable gates the 7-seg anodes (blank until a result is ready)
 //   BCD digits -> seven_seg_driver -> seg[] / an[]
 //
+// This module is already structural (a netlist of sub-module instances). The
+// remaining glue -- the reset synchronizer, the counter-reset OR, and the
+// display-blanking select -- is likewise built from primitives (dffr, gate,
+// mux2N) so the whole design is structural end-to-end. See primitives.v.
+//
 // NOTE on the port list: the requested ports (clk, btn_reset, pmod_button_in,
 // led_stimulus, seg/an) do not include a way to *start* a trial, which the FSM
 // requires. `btn_start` is therefore added as a required input. `led_false_start`
@@ -61,12 +66,12 @@ module top #(
 
     // -------------------------------------------------------------------------
     // Reset synchronizer: bring the (bouncy/async) reset button into the clock
-    // domain. Active-high system reset used by every sub-module.
+    // domain with two flip-flops. Active-high system reset used by every
+    // sub-module. (Structural: two dffr cells, no reset of their own.)
     // -------------------------------------------------------------------------
-    reg [1:0] rst_sync_ff;
-    always @(posedge clk)
-        rst_sync_ff <= {rst_sync_ff[0], btn_reset};
-    wire rst = rst_sync_ff[1];
+    wire rst_ff0, rst;
+    dffr #(1'b0) u_rst0 (.clk(clk), .rst(1'b0), .en(1'b1), .d(btn_reset), .q(rst_ff0));
+    dffr #(1'b0) u_rst1 (.clk(clk), .rst(1'b0), .en(1'b1), .d(rst_ff0),   .q(rst));
 
     // -------------------------------------------------------------------------
     // Inter-module nets
@@ -82,12 +87,10 @@ module top #(
     wire [6:0]          seg_int;         // segment bus from the driver
 
     // FSM control/status outputs
-    wire w_led_stimulus;
     wire w_counter_start;
     wire w_counter_stop;
     wire w_counter_reset;
     wire w_lfsr_enable;      // available; the LFSR free-runs (no enable port)
-    wire w_false_start;
     wire w_display_enable;
 
     // -------------------------------------------------------------------------
@@ -149,12 +152,12 @@ module top #(
         .lfsr_value       (lfsr_value),     // <- LFSR
         .ms_elapsed       (ms_elapsed),     // <- counter
         .start_button     (start_db),       // <- debounce #2
-        .led_stimulus     (w_led_stimulus),
+        .led_stimulus     (led_stimulus),   // -> stimulus LED output
         .counter_start    (w_counter_start),
         .counter_stop     (w_counter_stop),
         .counter_reset    (w_counter_reset),
         .lfsr_enable      (w_lfsr_enable),
-        .false_start_flag (w_false_start),
+        .false_start_flag (led_false_start),// -> false-start LED output
         .display_enable   (w_display_enable)
     );
 
@@ -164,12 +167,15 @@ module top #(
     //   start/stop = FSM pulses (start in STIMULUS, stop on the response press)
     //   ms   -> FSM (ms_elapsed) and BCD converter
     // -------------------------------------------------------------------------
+    wire counter_rst;
+    or (counter_rst, rst, w_counter_reset);
+
     counter #(
         .CLKS_PER_MS (CLKS_PER_MS),
         .MS_WIDTH    (MS_WIDTH)
     ) u_counter (
         .clk     (clk),
-        .rst     (rst | w_counter_reset),
+        .rst     (counter_rst),
         .start   (w_counter_start),
         .stop    (w_counter_stop),
         .ms      (ms_elapsed),
@@ -210,11 +216,8 @@ module top #(
     // -------------------------------------------------------------------------
     // Output wiring
     // -------------------------------------------------------------------------
-    assign led_stimulus    = w_led_stimulus;
-    assign led_false_start = w_false_start;
-
     // Segments pass through untouched.
-    assign seg = seg_int;
+    assign seg = seg_int;   // pure wiring (alias)
 
     // Blank the display (drive all anodes inactive) unless the FSM says a
     // result is ready. Inactive anode level depends on AN_ACTIVE_LOW.
@@ -222,6 +225,12 @@ module top #(
     localparam [NUM_DIGITS-1:0] AN_BLANK =
         AN_ACTIVE_LOW ? {NUM_DIGITS{1'b1}} : {NUM_DIGITS{1'b0}};
 
-    assign an = w_display_enable ? an_int : AN_BLANK;
+    // an = w_display_enable ? an_int : AN_BLANK
+    mux2N #(.WIDTH(NUM_DIGITS)) u_anblank (
+        .a   (AN_BLANK),
+        .b   (an_int),
+        .sel (w_display_enable),
+        .y   (an)
+    );
 
 endmodule

@@ -17,6 +17,13 @@
 // active-high digit-select (an[k]=1 selects digit k). For a common-anode
 // module set SEG_ACTIVE_LOW=1; for active-low digit-select set AN_ACTIVE_LOW=1.
 // Digit index: an[0]=ones, an[1]=tens, an[2]=hundreds.
+//
+// STRUCTURAL implementation: the refresh prescaler and digit index are
+// `registerN` counters with wrap logic built from eqN/adderN/mux2N; the active
+// digit is selected with a one-hot decoder driving both the anodes and an
+// AND/OR input mux; the BCD->7-seg map is the gate-level `seg7_decoder`; and
+// the output polarity is chosen by a generate-if of buf/not gates. Assumes
+// NUM_DIGITS >= 3 (three digit data inputs). See primitives.v.
 // -----------------------------------------------------------------------------
 
 module seven_seg_driver #(
@@ -30,74 +37,134 @@ module seven_seg_driver #(
     input  wire [3:0]            hundreds,
     input  wire [3:0]            tens,
     input  wire [3:0]            ones,
-    output reg  [NUM_DIGITS-1:0] an,         // digit-select (one active at a time)
-    output reg  [6:0]            seg         // segment pattern a..g
+    output wire [NUM_DIGITS-1:0] an,         // digit-select (one active at a time)
+    output wire [6:0]            seg         // segment pattern a..g
 );
 
-    localparam integer RW = (REFRESH_CLKS <= 1) ? 1 : $clog2(REFRESH_CLKS);
-    localparam integer DW = (NUM_DIGITS   <= 1) ? 1 : $clog2(NUM_DIGITS);
+    localparam integer      RW    = (REFRESH_CLKS <= 1) ? 1 : $clog2(REFRESH_CLKS);
+    localparam integer      DW    = (NUM_DIGITS   <= 1) ? 1 : $clog2(NUM_DIGITS);
+    localparam [RW-1:0]     R_MAX = REFRESH_CLKS[RW-1:0] - 1'b1;   // slot terminal count
+    localparam [DW-1:0]     D_MAX = NUM_DIGITS[DW-1:0]   - 1'b1;   // last digit index
 
-    // --- Refresh / digit-scan timing ----------------------------------------
-    reg [RW-1:0] refresh_cnt;
-    reg [DW-1:0] digit_idx;
+    // ------------------------------------------------------------------------
+    // Refresh prescaler: counts every clock, wraps at R_MAX. `slot_done`
+    // (one clock per digit slot) advances the digit index.
+    // ------------------------------------------------------------------------
+    wire [RW-1:0] refresh_cnt, refr_plus1, refr_next;
+    wire          slot_done, refr_co;
+    eqN #(.WIDTH(RW)) u_rmax (.a(refresh_cnt), .b(R_MAX), .eq(slot_done));
+    adderN #(.WIDTH(RW)) u_rinc (
+        .a(refresh_cnt), .b({RW{1'b0}}), .cin(1'b1), .sum(refr_plus1), .cout(refr_co)
+    );
+    mux2N #(.WIDTH(RW)) u_rmux (
+        .a(refr_plus1), .b({RW{1'b0}}), .sel(slot_done), .y(refr_next)
+    );
+    registerN #(.WIDTH(RW), .RESET_VAL({RW{1'b0}})) u_refresh (
+        .clk(clk), .rst(rst), .en(1'b1), .d(refr_next), .q(refresh_cnt)
+    );
 
-    always @(posedge clk) begin
-        if (rst) begin
-            refresh_cnt <= {RW{1'b0}};
-            digit_idx   <= {DW{1'b0}};
+    // ------------------------------------------------------------------------
+    // Digit index: advances once per slot, wraps at D_MAX (= NUM_DIGITS-1).
+    // ------------------------------------------------------------------------
+    wire [DW-1:0] digit_idx, dig_plus1, dig_wrap, dig_next;
+    wire          at_last, dig_co;
+    eqN #(.WIDTH(DW)) u_dmax (.a(digit_idx), .b(D_MAX), .eq(at_last));
+    adderN #(.WIDTH(DW)) u_dinc (
+        .a(digit_idx), .b({DW{1'b0}}), .cin(1'b1), .sum(dig_plus1), .cout(dig_co)
+    );
+    mux2N #(.WIDTH(DW)) u_dmux (
+        .a(dig_plus1), .b({DW{1'b0}}), .sel(at_last), .y(dig_wrap)
+    );
+    // digit register only updates on a slot boundary (enable = slot_done).
+    registerN #(.WIDTH(DW), .RESET_VAL({DW{1'b0}})) u_digit (
+        .clk(clk), .rst(rst), .en(slot_done), .d(dig_wrap), .q(digit_idx)
+    );
+
+    // ------------------------------------------------------------------------
+    // One-hot digit select (drives both the anodes and the input mux below).
+    // ------------------------------------------------------------------------
+    wire [NUM_DIGITS-1:0] an_onehot;
+    onehot_decoder #(.SEL_WIDTH(DW), .OUT_WIDTH(NUM_DIGITS)) u_dec (
+        .sel (digit_idx), .onehot (an_onehot)
+    );
+
+    // ------------------------------------------------------------------------
+    // Select the BCD digit for the active slot: an_onehot[0]->ones,
+    // [1]->tens, [2]->hundreds. AND-mask each input by its select, then OR.
+    // Slots >= 3 (if NUM_DIGITS > 3) get 0 -> a blank digit.
+    // ------------------------------------------------------------------------
+    wire [3:0] cur_bcd;
+    genvar b;
+    generate
+        for (b = 0; b < 4; b = b + 1) begin : bcdmux
+            wire mo, mt, mh;
+            and (mo, ones[b],     an_onehot[0]);
+            and (mt, tens[b],     an_onehot[1]);
+            and (mh, hundreds[b], an_onehot[2]);
+            or  (cur_bcd[b], mo, mt, mh);
         end
-        else if (refresh_cnt == REFRESH_CLKS[RW-1:0] - 1'b1) begin
-            refresh_cnt <= {RW{1'b0}};
-            if (digit_idx == NUM_DIGITS[DW-1:0] - 1'b1)
-                digit_idx <= {DW{1'b0}};
-            else
-                digit_idx <= digit_idx + 1'b1;
+    endgenerate
+
+    // ------------------------------------------------------------------------
+    // BCD -> 7-segment (active-high, 1 = lit).
+    // ------------------------------------------------------------------------
+    wire [6:0] seg_raw;
+    seg7_decoder u_seg (.d(cur_bcd), .seg(seg_raw));
+
+    // ------------------------------------------------------------------------
+    // Output polarity: invert per the parameters (compile-time choice).
+    // ------------------------------------------------------------------------
+    genvar k;
+    generate
+        for (k = 0; k < NUM_DIGITS; k = k + 1) begin : an_pol
+            if (AN_ACTIVE_LOW) not (an[k], an_onehot[k]);
+            else               buf (an[k], an_onehot[k]);
         end
-        else begin
-            refresh_cnt <= refresh_cnt + 1'b1;
+        for (k = 0; k < 7; k = k + 1) begin : seg_pol
+            if (SEG_ACTIVE_LOW) not (seg[k], seg_raw[k]);
+            else                buf (seg[k], seg_raw[k]);
         end
-    end
+    endgenerate
 
-    // --- Select the BCD digit for the active slot ---------------------------
-    reg [3:0] cur_bcd;
-    always @* begin
-        case (digit_idx)
-            2'd0:    cur_bcd = ones;
-            2'd1:    cur_bcd = tens;
-            2'd2:    cur_bcd = hundreds;
-            default: cur_bcd = 4'd0;
-        endcase
-    end
+endmodule
 
-    // --- BCD -> 7-segment (active-high, 1 = lit) ----------------------------
-    function [6:0] seg_decode(input [3:0] d);
-        begin
-            case (d)                     //             abcdefg
-                4'd0: seg_decode = 7'b1111110;
-                4'd1: seg_decode = 7'b0110000;
-                4'd2: seg_decode = 7'b1101101;
-                4'd3: seg_decode = 7'b1111001;
-                4'd4: seg_decode = 7'b0110011;
-                4'd5: seg_decode = 7'b1011011;
-                4'd6: seg_decode = 7'b1011111;
-                4'd7: seg_decode = 7'b1110000;
-                4'd8: seg_decode = 7'b1111111;
-                4'd9: seg_decode = 7'b1111011;
-                default: seg_decode = 7'b0000000; // blank for A-F
-            endcase
-        end
-    endfunction
 
-    // --- Drive outputs (one-hot digit-select + decoded segments) ------------
-    reg [NUM_DIGITS-1:0] an_onehot;
-    always @* begin
-        an_onehot            = {NUM_DIGITS{1'b0}};
-        an_onehot[digit_idx] = 1'b1;
-    end
+// -----------------------------------------------------------------------------
+// seg7_decoder -- gate-level BCD (0..9) to 7-segment decoder.
+//
+// seg[6]=a .. seg[0]=g, active-high (1 = lit). Digits A..F (10..15) blank.
+// Implemented as a sum-of-minterms: minterms m0..m9 are 4-input ANDs of the
+// input literals, and each segment is the OR of the minterms for the digits
+// where it is lit. For inputs 10..15 every minterm is 0 -> all segments off.
+// -----------------------------------------------------------------------------
+module seg7_decoder (
+    input  wire [3:0] d,
+    output wire [6:0] seg
+);
+    wire n3, n2, n1, n0;
+    not (n3, d[3]);
+    not (n2, d[2]);
+    not (n1, d[1]);
+    not (n0, d[0]);
 
-    always @* begin
-        an  = AN_ACTIVE_LOW  ? ~an_onehot          : an_onehot;
-        seg = SEG_ACTIVE_LOW ? ~seg_decode(cur_bcd) : seg_decode(cur_bcd);
-    end
+    wire m0, m1, m2, m3, m4, m5, m6, m7, m8, m9;
+    and (m0, n3, n2, n1, n0);   // 0000
+    and (m1, n3, n2, n1, d[0]); // 0001
+    and (m2, n3, n2, d[1], n0); // 0010
+    and (m3, n3, n2, d[1], d[0]); // 0011
+    and (m4, n3, d[2], n1, n0); // 0100
+    and (m5, n3, d[2], n1, d[0]); // 0101
+    and (m6, n3, d[2], d[1], n0); // 0110
+    and (m7, n3, d[2], d[1], d[0]); // 0111
+    and (m8, d[3], n2, n1, n0); // 1000
+    and (m9, d[3], n2, n1, d[0]); // 1001
 
+    // Segment ON minterm sets (digits that light each segment):
+    or (seg[6], m0, m2, m3, m5, m6, m7, m8, m9);        // a : 0,2,3,5,6,7,8,9
+    or (seg[5], m0, m1, m2, m3, m4, m7, m8, m9);        // b : 0,1,2,3,4,7,8,9
+    or (seg[4], m0, m1, m3, m4, m5, m6, m7, m8, m9);    // c : all except 2
+    or (seg[3], m0, m2, m3, m5, m6, m8, m9);            // d : 0,2,3,5,6,8,9
+    or (seg[2], m0, m2, m6, m8);                        // e : 0,2,6,8
+    or (seg[1], m0, m4, m5, m6, m8, m9);                // f : 0,4,5,6,8,9
+    or (seg[0], m2, m3, m4, m5, m6, m8, m9);            // g : 2,3,4,5,6,8,9
 endmodule
