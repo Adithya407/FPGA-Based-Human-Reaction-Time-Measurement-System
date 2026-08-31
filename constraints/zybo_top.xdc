@@ -1,3 +1,19 @@
+set_property -dict {PACKAGE_PIN L16 IOSTANDARD LVCMOS33} [get_ports clk]
+set_property -dict {PACKAGE_PIN R18 IOSTANDARD LVCMOS33} [get_ports btn_reset]
+set_property -dict {PACKAGE_PIN P16 IOSTANDARD LVCMOS33} [get_ports btn_start]
+set_property -dict {PACKAGE_PIN M14 IOSTANDARD LVCMOS33} [get_ports led_stimulus]
+set_property -dict {PACKAGE_PIN M15 IOSTANDARD LVCMOS33} [get_ports led_false_start]
+set_property -dict {PACKAGE_PIN V15 IOSTANDARD LVCMOS33} [get_ports pmod_button_in]
+set_property -dict {PACKAGE_PIN V17 IOSTANDARD LVCMOS33} [get_ports {seg[6]}]
+set_property -dict {PACKAGE_PIN U15 IOSTANDARD LVCMOS33} [get_ports {seg[5]}]
+set_property -dict {PACKAGE_PIN U14 IOSTANDARD LVCMOS33} [get_ports {seg[4]}]
+set_property -dict {PACKAGE_PIN R14 IOSTANDARD LVCMOS33} [get_ports {seg[3]}]
+set_property -dict {PACKAGE_PIN P14 IOSTANDARD LVCMOS33} [get_ports {seg[2]}]
+set_property -dict {PACKAGE_PIN T15 IOSTANDARD LVCMOS33} [get_ports {seg[1]}]
+set_property -dict {PACKAGE_PIN T14 IOSTANDARD LVCMOS33} [get_ports {seg[0]}]
+set_property -dict {PACKAGE_PIN V18 IOSTANDARD LVCMOS33} [get_ports {an[0]}]
+set_property -dict {PACKAGE_PIN V12 IOSTANDARD LVCMOS33} [get_ports {an[1]}]
+set_property -dict {PACKAGE_PIN W16 IOSTANDARD LVCMOS33} [get_ports {an[2]}]
 ## ============================================================================
 ## zybo_top.xdc -- pin constraints for rtl/top.v on the Digilent ZYBO (Zynq-7010)
 ##
@@ -27,29 +43,23 @@
 ## ---------------------------------------------------------------------------
 ## System clock -- 125 MHz onboard oscillator
 ## ---------------------------------------------------------------------------
-set_property -dict { PACKAGE_PIN L16  IOSTANDARD LVCMOS33 } [get_ports { clk }]; # sysclk  (125 MHz GCLK)  -- PLACEHOLDER, verify
-create_clock -add -name sys_clk_pin -period 8.000 -waveform {0 4.000} [get_ports { clk }]; # 8 ns = 125 MHz
+create_clock -period 8.000 -name sys_clk_pin -waveform {0.000 4.000} -add [get_ports clk]
 
 
 ## ---------------------------------------------------------------------------
 ## Onboard push-buttons (active-high on ZYBO)
 ## ---------------------------------------------------------------------------
-set_property -dict { PACKAGE_PIN R18  IOSTANDARD LVCMOS33 } [get_ports { btn_reset }]; # BTN0  -- PLACEHOLDER, verify
-set_property -dict { PACKAGE_PIN P16  IOSTANDARD LVCMOS33 } [get_ports { btn_start }]; # BTN1  -- PLACEHOLDER, verify
 
 
 ## ---------------------------------------------------------------------------
 ## Onboard LEDs (active-high on ZYBO)
 ## ---------------------------------------------------------------------------
-set_property -dict { PACKAGE_PIN M14  IOSTANDARD LVCMOS33 } [get_ports { led_stimulus }]; # LD0  -- PLACEHOLDER, verify
-set_property -dict { PACKAGE_PIN M15  IOSTANDARD LVCMOS33 } [get_ports { led_false_start }]; # LD1  -- PLACEHOLDER, verify
 
 
 ## ---------------------------------------------------------------------------
 ## External push-button on a PMOD header pin
 ##   Uses PMOD JC top-row pin 1.
 ## ---------------------------------------------------------------------------
-set_property -dict { PACKAGE_PIN V15  IOSTANDARD LVCMOS33 } [get_ports { pmod_button_in }]; # JC1 (JC_P[0]) -- PLACEHOLDER, verify
 
 
 ## ---------------------------------------------------------------------------
@@ -60,14 +70,18 @@ set_property -dict { PACKAGE_PIN V15  IOSTANDARD LVCMOS33 } [get_ports { pmod_bu
 ##   Segments a..g mapped across PMOD JD (all 8 pins), plus an[0] on JD10.
 ##   Remaining digit-selects an[1], an[2] on PMOD JE.
 ## ---------------------------------------------------------------------------
-set_property -dict { PACKAGE_PIN V17  IOSTANDARD LVCMOS33 } [get_ports { seg[6] }]; # JD9  -> segment a  -- PLACEHOLDER, verify
-set_property -dict { PACKAGE_PIN U15  IOSTANDARD LVCMOS33 } [get_ports { seg[5] }]; # JD8  -> segment b  -- PLACEHOLDER, verify
-set_property -dict { PACKAGE_PIN U14  IOSTANDARD LVCMOS33 } [get_ports { seg[4] }]; # JD7  -> segment c  -- PLACEHOLDER, verify
-set_property -dict { PACKAGE_PIN R14  IOSTANDARD LVCMOS33 } [get_ports { seg[3] }]; # JD4  -> segment d  -- PLACEHOLDER, verify
-set_property -dict { PACKAGE_PIN P14  IOSTANDARD LVCMOS33 } [get_ports { seg[2] }]; # JD3  -> segment e  -- PLACEHOLDER, verify
-set_property -dict { PACKAGE_PIN T15  IOSTANDARD LVCMOS33 } [get_ports { seg[1] }]; # JD2  -> segment f  -- PLACEHOLDER, verify
-set_property -dict { PACKAGE_PIN T14  IOSTANDARD LVCMOS33 } [get_ports { seg[0] }]; # JD1  -> segment g  -- PLACEHOLDER, verify
 
-set_property -dict { PACKAGE_PIN V18  IOSTANDARD LVCMOS33 } [get_ports { an[0] }]; # JD10 -> digit 0 (ones)     -- PLACEHOLDER, verify
-set_property -dict { PACKAGE_PIN V12  IOSTANDARD LVCMOS33 } [get_ports { an[1] }]; # JE1  -> digit 1 (tens)     -- PLACEHOLDER, verify
-set_property -dict { PACKAGE_PIN W16  IOSTANDARD LVCMOS33 } [get_ports { an[2] }]; # JE2  -> digit 2 (hundreds) -- PLACEHOLDER, verify
+
+set_load 5.000 [all_outputs]
+set_property LOAD 5 [get_ports {an[0]}]
+set_property LOAD 5 [get_ports {an[1]}]
+set_property LOAD 5 [get_ports {an[2]}]
+set_property LOAD 5 [get_ports led_false_start]
+set_property LOAD 5 [get_ports led_stimulus]
+set_property LOAD 5 [get_ports {seg[0]}]
+set_property LOAD 5 [get_ports {seg[1]}]
+set_property LOAD 5 [get_ports {seg[2]}]
+set_property LOAD 5 [get_ports {seg[3]}]
+set_property LOAD 5 [get_ports {seg[4]}]
+set_property LOAD 5 [get_ports {seg[5]}]
+set_property LOAD 5 [get_ports {seg[6]}]
