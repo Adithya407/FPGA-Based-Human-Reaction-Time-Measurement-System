@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+hi// -----------------------------------------------------------------------------
 // counter.v -- synchronous millisecond (elapsed-time) counter
 //
 // Divides the 125 MHz system clock down to 1 ms ticks and counts those ticks
