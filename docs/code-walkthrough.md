@@ -35,10 +35,17 @@ plus one commit:
 01e6254  Initial commit
 7cf8cbe  Revise README with project details and objectives
 af6bee0  Add complete RTL design and testbench suite
-e2088df  Improve Vivado behavioral simulation flow       <-- tip of  main
-7e3f03c  Refactor RTL into structural primitive netlists  <-- tip of  Struct_mod
-ca867aa  Refactor FSM and BCD logic to behavioral RTL     <-- tip of  Option3
+e2088df  Improve Vivado behavioral simulation flow
+93cd311  Add comprehensive multi-branch walkthrough
+096b5d9  Refine ZYBO XDC pin and timing constraints
+  ...    (later main commits, e.g. doc updates)          <-- tip of  main
+<hash>   Refactor RTL into structural primitive netlists  <-- tip of  Struct_mod
+<hash>   Refactor FSM and BCD logic to behavioral RTL     <-- tip of  Option3
 ```
+
+The `Struct_mod` and `Option3` commits are rebased onto `main` whenever `main`
+moves, so their hashes change and are deliberately not hard-coded here. Use
+`git log --oneline --graph main Struct_mod Option3` to see the current ones.
 
 So `Struct_mod` contains everything on `main`, and `Option3` contains everything
 on `Struct_mod`. The *design intent*, however, is three different **modelling
@@ -73,8 +80,9 @@ Struct_mod -> Option3       2 files changed,  119 insertions(+), 277 deletions(-
 ```
 
 `Option3`'s single commit reverts **only** `rtl/bcd_converter.v` and
-`rtl/fsm_controller.v` back to their `main` (behavioral) content — byte for byte,
-apart from the removed "STRUCTURAL implementation" comment paragraphs.
+`rtl/fsm_controller.v` back to their `main` (behavioral) content — byte
+for byte (`git diff main Option3 -- rtl/bcd_converter.v rtl/fsm_controller.v`
+is empty).
 
 ---
 
@@ -601,7 +609,7 @@ creates) is covered only partially — the `.xpr` itself is not ignored.
 
 ## 6. Branch `Struct_mod` — the full structural rewrite
 
-> **Commit:** `7e3f03c` *Refactor RTL into structural primitive netlists*
+> **Commit:** tip of `Struct_mod` — *Refactor RTL into structural primitive netlists*
 > **Scope:** 10 files changed, +1042 / −278.
 
 ### 6.1 The idea and the house style
@@ -910,7 +918,7 @@ full; its structure:
 
 ## 7. Branch `Option3` — the practical mixed style
 
-> **Commit:** `ca867aa` *Refactor FSM and BCD logic to behavioral RTL*
+> **Commit:** tip of `Option3` — *Refactor FSM and BCD logic to behavioral RTL*
 > **Scope:** 2 files changed, +119 / −277.
 
 `Option3` executes the plan written in
@@ -1099,5 +1107,5 @@ refactors preserved the hierarchical net names the testbenches depend on.
 
 ---
 
-*Generated from commit `ca867aa` (`Option3`), with `Struct_mod` at `7e3f03c` and
-`main` at `e2088df`.*
+*Originally generated with `main` at `e2088df`; branch map updated after
+`Struct_mod` and `Option3` were rebased onto `096b5d9`.*
