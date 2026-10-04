@@ -64,7 +64,7 @@ styles** describing the same hardware:
 | `rtl/top.v` | netlist + behavioral glue | netlist + **structural glue** | netlist + structural glue |
 | `tb/*.v` (7 files) | — | *identical to `main`* | *identical to `main`* |
 | `constraints/`, `sim/run_vivado_sim.tcl` | — | *identical* | *identical* |
-| `sim/run_modelsim.do` | 58 lines | **+5** (compiles `primitives.v` first) | same as `Struct_mod` |
+| `sim/run_modelsim.do` | 61 lines | **+5** (compiles `primitives.v` first) | same as `Struct_mod` |
 | `docs/structural-modelling-option3.md` | absent | **present** | present |
 
 **The key insight:** the *testbenches never change*. All three branches are
@@ -510,21 +510,23 @@ The system-level testbench, and the most interesting file in the suite.
 
 ## 5. Branch `main` — scripts, constraints, docs
 
-### 5.1 `sim/run_modelsim.do` (58 lines)
+### 5.1 `sim/run_modelsim.do` (61 lines)
 
 A ModelSim/QuestaSim batch script.
 
 | Lines | What it does |
 |---|---|
-| 1–5 | Usage comment: `vsim -c -do run_modelsim.do` from the `sim/` directory. |
-| 7–10 | `quit -sim`, delete any existing `work` library, then `vlib` / `vmap` a fresh one. Starting clean prevents stale-object confusion. |
-| 12–52 | Seven identical blocks, one per module: `vlog` the RTL, `vlog` the TB, `vsim -c work.<tb>`, `run -all`. Order runs leaf modules first and `top_tb` last. |
-| 54–58 | A commented template for adding further modules. |
+| 1–8 | Usage comment: `vsim -c -do run_modelsim.do` from the `sim/` directory, plus a note on why every `vsim` uses `-onfinish stop`. |
+| 10–13 | `quit -sim`, delete any existing `work` library, then `vlib` / `vmap` a fresh one. Starting clean prevents stale-object confusion. |
+| 15–55 | Seven identical blocks, one per module: `vlog` the RTL, `vlog` the TB, `vsim -c -onfinish stop work.<tb>`, `run -all`. Order runs leaf modules first and `top_tb` last. |
+| 57–61 | A commented template for adding further modules. |
 
-> **Practical caveat:** each testbench ends with `$finish`, which in ModelSim
-> terminates the whole batch session. In practice the later blocks may not run.
-> `docs/structural-modelling-option3.md` §5 gives the robust alternative — compile
-> everything once, then launch each testbench in its **own** `vsim` process:
+> **Why `-onfinish stop`:** each testbench ends with `$finish`, which by default
+> terminates the whole batch `vsim` session, so originally only `lfsr_tb` ran.
+> With `-onfinish stop`, `$finish` only stops the current simulation, the next
+> `vsim` loads the next testbench, and all seven blocks run in one session.
+> Launching each testbench in its own process (as in
+> `docs/structural-modelling-option3.md` §5) also still works:
 > ```bash
 > for tb in lfsr_tb counter_tb debounce_tb bcd_converter_tb \
 >           seven_seg_driver_tb fsm_controller_tb top_tb; do
@@ -887,7 +889,7 @@ Every parameter, port and instance name is untouched — `u_fsm`, `ms_elapsed`,
 
 ### 6.9 `sim/run_modelsim.do` — +5 lines
 
-One insertion right after `vmap work work` (lines 12–16):
+One insertion right after `vmap work work` (lines 15–19):
 
 ```tcl
 # --- Structural primitives library (needed by every RTL module) -------------
@@ -1076,9 +1078,9 @@ refactors preserved the hierarchical net names the testbenches depend on.
   `create_clock` period (8 ns) is trustworthy; the `PACKAGE_PIN` values must be
   checked against the official Digilent master XDC for your board revision. The
   original ZYBO and the Zybo Z7 differ.
-- **`sim/run_modelsim.do` runs only the first testbench in a batch session**,
-  because `$finish` ends the `vsim` process. Use the per-testbench loop from
-  `docs/structural-modelling-option3.md` §5 (reproduced in §5.1 above).
+- **`sim/run_modelsim.do` used to run only the first testbench in a batch
+  session**, because `$finish` ended the `vsim` process. Fixed: every `vsim`
+  line now passes `-onfinish stop` (see §5.1).
 - **`Struct_mod`'s 32-bit ripple-carry comparators are a timing risk.** The FSM
   instantiates three `geN #(32)`, each a 32-stage ripple-carry chain, plus a
   32-bit `adderN` for the timer and eight more inside `mul_const8`. At 125 MHz
