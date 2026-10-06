@@ -18,7 +18,7 @@
 //   FSM.led_stimulus -> onboard/stimulus LED
 //   FSM.display_enable gates the digit selects (blank until a result is ready)
 //   BCD digits -> seven_seg_driver -> seg/an -> pmodssd_adapter
-//     -> ssd_lo_* (Pmod SSD #1: tens | ones) and ssd_hi_* (Pmod SSD #2: hundreds)
+//     -> ssd_ht_* (Pmod SSD #1: hundreds | tens) and ssd_ones_* (Pmod SSD #2: ones)
 //
 // This module is already structural (a netlist of sub-module instances). The
 // remaining glue -- the reset synchronizer, the counter-reset OR, and the
@@ -50,22 +50,22 @@ module top #(
     parameter integer FALSE_HOLD_CLKS  = 125_000_000,
 
     // Pmod SSD digit-select level that lights a module's right digit (0 per
-    // Digilent). Set to 1 if tens and ones show up swapped on the hardware.
-    parameter         SSD_C_RIGHT      = 1'b0
+    // Digilent). Set to 1 if the digits within a module show up swapped.
+    parameter [0:0]   SSD_C_RIGHT      = 1'b0
 ) (
     input  wire       clk,             // 125 MHz PL clock
     input  wire       btn_reset,       // active-high reset (push-button)
     input  wire       btn_start,       // ADDED: start-a-trial push-button
-    input  wire       pmod_button_in,  // raw PMOD response button
+    input  wire       pmod_button_in,  // raw response button (BTN2 on the Zybo Z7)
 
     output wire       led_stimulus,    // stimulus LED
     output wire       led_false_start, // ADDED: false-start indicator LED
 
     // Two Digilent Pmod SSDs (segments a..g active-high, seg[6]=a ... seg[0]=g)
-    output wire [6:0] ssd_lo_seg,      // Pmod SSD #1 segments: tens | ones
-    output wire       ssd_lo_c,        // Pmod SSD #1 digit select
-    output wire [6:0] ssd_hi_seg,      // Pmod SSD #2 segments: hundreds
-    output wire       ssd_hi_c         // Pmod SSD #2 digit select
+    output wire [6:0] ssd_ht_seg,      // Pmod SSD #1 segments: hundreds | tens
+    output wire       ssd_ht_c,        // Pmod SSD #1 digit select
+    output wire [6:0] ssd_ones_seg,    // Pmod SSD #2 segments: ones | (unused)
+    output wire       ssd_ones_c       // Pmod SSD #2 digit select
 );
 
     // Three digits (hundreds, tens, ones), fixed by the Pmod SSD adapter.
@@ -119,7 +119,7 @@ module top #(
     );
 
     // -------------------------------------------------------------------------
-    // Debounce #1: PMOD response button -> clean `button_db` for the FSM.
+    // Debounce #1: response button -> clean `button_db` for the FSM.
     // -------------------------------------------------------------------------
     debounce #(
         .STABLE_COUNT (DEBOUNCE_CLKS)
@@ -242,10 +242,10 @@ module top #(
     ) u_ssd (
         .seg        (seg),
         .an         (an),
-        .ssd_lo_seg (ssd_lo_seg),
-        .ssd_lo_c   (ssd_lo_c),
-        .ssd_hi_seg (ssd_hi_seg),
-        .ssd_hi_c   (ssd_hi_c)
+        .ssd_ht_seg   (ssd_ht_seg),
+        .ssd_ht_c     (ssd_ht_c),
+        .ssd_ones_seg (ssd_ones_seg),
+        .ssd_ones_c   (ssd_ones_c)
     );
 
 endmodule
