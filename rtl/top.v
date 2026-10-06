@@ -8,15 +8,17 @@
 //   fsm_controller    -> sequences the whole trial and drives control signals
 //   counter           -> measures elapsed reaction time in milliseconds
 //   bcd_converter     -> binary ms -> 3 decimal digits
-//   seven_seg_driver  -> multiplexes the digits onto the PMOD 7-seg display
+//   seven_seg_driver  -> multiplexes the three digits (one-hot scan)
+//   pmodssd_adapter   -> steers the scan onto two Digilent Pmod SSD modules
 //
 // Dataflow / control:
 //   pmod_button_in --[debounce]--> button ---> FSM
 //   btn_start      --[debounce]--> start ----> FSM
 //   FSM.counter_start/stop/reset -> counter ; counter.ms -> FSM & BCD
 //   FSM.led_stimulus -> onboard/stimulus LED
-//   FSM.display_enable gates the 7-seg anodes (blank until a result is ready)
-//   BCD digits -> seven_seg_driver -> seg[] / an[]
+//   FSM.display_enable gates the digit selects (blank until a result is ready)
+//   BCD digits -> seven_seg_driver -> seg/an -> pmodssd_adapter
+//     -> ssd_lo_* (Pmod SSD #1: tens | ones) and ssd_hi_* (Pmod SSD #2: hundreds)
 //
 // This module is already structural (a netlist of sub-module instances). The
 // remaining glue -- the reset synchronizer, the counter-reset OR, and the
@@ -24,7 +26,7 @@
 // mux2N) so the whole design is structural end-to-end. See primitives.v.
 //
 // NOTE on the port list: the requested ports (clk, btn_reset, pmod_button_in,
-// led_stimulus, seg/an) do not include a way to *start* a trial, which the FSM
+// led_stimulus, display) do not include a way to *start* a trial, which the FSM
 // requires. `btn_start` is therefore added as a required input. `led_false_start`
 // is also exposed so an early press is visible on an onboard LED. Both are
 // clearly marked below; remove/remap them in the .xdc as your board wiring
@@ -35,7 +37,6 @@ module top #(
     // System / timing parameters (defaults target the 125 MHz PL clock).
     parameter integer CLK_HZ           = 125_000_000,
     parameter integer MS_WIDTH         = 10,          // ms output width (0..1023)
-    parameter integer NUM_DIGITS       = 3,           // 7-seg digits (h,t,o)
 
     parameter integer DEBOUNCE_CLKS    = 1_250_000,   // ~10 ms @ 125 MHz
     parameter integer CLKS_PER_MS      = 125_000,     // 125 MHz -> 1 ms tick
@@ -48,21 +49,27 @@ module top #(
     parameter integer RESULT_HOLD_CLKS = 375_000_000,
     parameter integer FALSE_HOLD_CLKS  = 125_000_000,
 
-    // Display electrical polarity -- set per the PMOD SSD wiring.
-    parameter         SEG_ACTIVE_LOW   = 1'b0,
-    parameter         AN_ACTIVE_LOW    = 1'b0
+    // Pmod SSD digit-select level that lights a module's right digit (0 per
+    // Digilent). Set to 1 if tens and ones show up swapped on the hardware.
+    parameter         SSD_C_RIGHT      = 1'b0
 ) (
-    input  wire                  clk,             // 125 MHz PL clock
-    input  wire                  btn_reset,       // active-high reset (push-button)
-    input  wire                  btn_start,       // ADDED: start-a-trial push-button
-    input  wire                  pmod_button_in,  // raw PMOD response button
+    input  wire       clk,             // 125 MHz PL clock
+    input  wire       btn_reset,       // active-high reset (push-button)
+    input  wire       btn_start,       // ADDED: start-a-trial push-button
+    input  wire       pmod_button_in,  // raw PMOD response button
 
-    output wire                  led_stimulus,    // stimulus LED
-    output wire                  led_false_start, // ADDED: false-start indicator LED
+    output wire       led_stimulus,    // stimulus LED
+    output wire       led_false_start, // ADDED: false-start indicator LED
 
-    output wire [6:0]            seg,             // 7-seg segments a..g (matches driver)
-    output wire [NUM_DIGITS-1:0] an              // 7-seg digit-select   (matches driver)
+    // Two Digilent Pmod SSDs (segments a..g active-high, seg[6]=a ... seg[0]=g)
+    output wire [6:0] ssd_lo_seg,      // Pmod SSD #1 segments: tens | ones
+    output wire       ssd_lo_c,        // Pmod SSD #1 digit select
+    output wire [6:0] ssd_hi_seg,      // Pmod SSD #2 segments: hundreds
+    output wire       ssd_hi_c         // Pmod SSD #2 digit select
 );
+
+    // Three digits (hundreds, tens, ones), fixed by the Pmod SSD adapter.
+    localparam integer NUM_DIGITS = 3;
 
     // -------------------------------------------------------------------------
     // Reset synchronizer: bring the (bouncy/async) reset button into the clock
@@ -83,8 +90,9 @@ module top #(
     wire                counter_done;    // counter status (unused at top)
     wire                counter_running; // counter status (unused at top)
     wire [3:0]          bcd_hundreds, bcd_tens, bcd_ones;
-    wire [NUM_DIGITS-1:0] an_int;        // pre-blanking anodes from the driver
-    wire [6:0]          seg_int;         // segment bus from the driver
+    wire [NUM_DIGITS-1:0] an_int;        // pre-blanking digit selects from the driver
+    wire [NUM_DIGITS-1:0] an;            // digit selects after display blanking
+    wire [6:0]          seg;             // segment bus from the driver
 
     // FSM control/status outputs
     wire w_counter_start;
@@ -196,13 +204,14 @@ module top #(
     );
 
     // -------------------------------------------------------------------------
-    // Seven-segment driver: multiplex the three BCD digits.
+    // Seven-segment driver: multiplex the three BCD digits. Active-high
+    // segments and digit selects, as the Pmod SSD adapter requires.
     // -------------------------------------------------------------------------
     seven_seg_driver #(
         .NUM_DIGITS     (NUM_DIGITS),
         .REFRESH_CLKS   (REFRESH_CLKS),
-        .SEG_ACTIVE_LOW (SEG_ACTIVE_LOW),
-        .AN_ACTIVE_LOW  (AN_ACTIVE_LOW)
+        .SEG_ACTIVE_LOW (1'b0),
+        .AN_ACTIVE_LOW  (1'b0)
     ) u_display (
         .clk      (clk),
         .rst      (rst),
@@ -210,27 +219,33 @@ module top #(
         .tens     (bcd_tens),
         .ones     (bcd_ones),
         .an       (an_int),
-        .seg      (seg_int)
+        .seg      (seg)
     );
 
     // -------------------------------------------------------------------------
-    // Output wiring
+    // Display blanking: deselect every digit unless the FSM says a result is
+    // ready. an = w_display_enable ? an_int : 0
     // -------------------------------------------------------------------------
-    // Segments pass through untouched.
-    assign seg = seg_int;   // pure wiring (alias)
-
-    // Blank the display (drive all anodes inactive) unless the FSM says a
-    // result is ready. Inactive anode level depends on AN_ACTIVE_LOW.
-    //   active-high select: inactive = 0 ; active-low select: inactive = 1
-    localparam [NUM_DIGITS-1:0] AN_BLANK =
-        AN_ACTIVE_LOW ? {NUM_DIGITS{1'b1}} : {NUM_DIGITS{1'b0}};
-
-    // an = w_display_enable ? an_int : AN_BLANK
     mux2N #(.WIDTH(NUM_DIGITS)) u_anblank (
-        .a   (AN_BLANK),
+        .a   ({NUM_DIGITS{1'b0}}),
         .b   (an_int),
         .sel (w_display_enable),
         .y   (an)
+    );
+
+    // -------------------------------------------------------------------------
+    // Pmod SSD adapter: steer the scanned digit to the module that owns it and
+    // keep the other module dark (see pmodssd_adapter.v).
+    // -------------------------------------------------------------------------
+    pmodssd_adapter #(
+        .C_RIGHT (SSD_C_RIGHT)
+    ) u_ssd (
+        .seg        (seg),
+        .an         (an),
+        .ssd_lo_seg (ssd_lo_seg),
+        .ssd_lo_c   (ssd_lo_c),
+        .ssd_hi_seg (ssd_hi_seg),
+        .ssd_hi_c   (ssd_hi_c)
     );
 
 endmodule

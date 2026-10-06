@@ -73,8 +73,10 @@ add_wave /top_tb/btn_start
 add_wave /top_tb/pmod_button_in
 add_wave /top_tb/led_stimulus
 add_wave /top_tb/led_false_start
-add_wave /top_tb/seg
-add_wave /top_tb/an
+add_wave /top_tb/ssd_lo_seg
+add_wave /top_tb/ssd_lo_c
+add_wave /top_tb/ssd_hi_seg
+add_wave /top_tb/ssd_hi_c
 
 # Key internal signals (explicitly requested).
 add_wave /top_tb/dut/u_fsm/state       ;# FSM state

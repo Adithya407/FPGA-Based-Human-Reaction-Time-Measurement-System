@@ -15,8 +15,9 @@
 // State transitions and measured values are printed with $display; every
 // scenario ends with a PASS/FAIL summary based on assertion counts.
 //
-// The displayed value is reconstructed the "real" way: by watching which anode
-// is active and decoding the segment bus, then combining the three digits.
+// The displayed value is reconstructed the "real" way: by watching which Pmod
+// SSD is lit and which digit its C pin selects, decoding that module's segment
+// bus, then combining the three digits.
 // -----------------------------------------------------------------------------
 
 `timescale 1ns / 1ps
@@ -44,8 +45,13 @@ module top_tb;
     reg                    pmod_button_in;
     wire                   led_stimulus;
     wire                   led_false_start;
-    wire [6:0]             seg;
-    wire [NUM_DIGITS-1:0]  an;
+    wire [6:0]             ssd_lo_seg;
+    wire                   ssd_lo_c;
+    wire [6:0]             ssd_hi_seg;
+    wire                   ssd_hi_c;
+
+    // Both Pmod SSDs completely dark (no segment lit on either module).
+    wire display_dark = (ssd_lo_seg == 7'b0) && (ssd_hi_seg == 7'b0);
 
     integer errors;        // total across all scenarios
     integer scn_errors;    // snapshot for per-scenario summary
@@ -54,7 +60,6 @@ module top_tb;
     // ---- DUT ---------------------------------------------------------------
     top #(
         .MS_WIDTH         (MS_WIDTH),
-        .NUM_DIGITS       (NUM_DIGITS),
         .DEBOUNCE_CLKS    (DEBOUNCE_CLKS),
         .CLKS_PER_MS      (CLKS_PER_MS),
         .REFRESH_CLKS     (REFRESH_CLKS),
@@ -69,8 +74,10 @@ module top_tb;
         .pmod_button_in  (pmod_button_in),
         .led_stimulus    (led_stimulus),
         .led_false_start (led_false_start),
-        .seg             (seg),
-        .an              (an)
+        .ssd_lo_seg      (ssd_lo_seg),
+        .ssd_lo_c        (ssd_lo_c),
+        .ssd_hi_seg      (ssd_hi_seg),
+        .ssd_hi_c        (ssd_hi_c)
     );
 
     // 125 MHz clock (8 ns period)
@@ -165,25 +172,33 @@ module top_tb;
         end
     endtask
 
-    // Scan the multiplexed display over a few full refresh cycles and rebuild
-    // the 3-digit value from the segment/anode outputs.
+    // Scan the display over a few full refresh cycles and rebuild the 3-digit
+    // value from the two Pmod SSD outputs, as a viewer would see it:
+    //   SSD #1 (lo): C=0 -> right digit = ones, C=1 -> left digit = tens
+    //   SSD #2 (hi): C=0 -> right digit = hundreds; its left digit stays dark
+    // Only one digit may be lit at any instant across both modules.
     task read_display(output integer value);
         integer i, h, t, o;
         reg got_h, got_t, got_o;
-        integer d;
+        reg lo_lit, hi_lit;
+        integer bad;
         begin
-            h = 0; t = 0; o = 0;
+            h = 0; t = 0; o = 0; bad = 0;
             got_h = 1'b0; got_t = 1'b0; got_o = 1'b0;
             for (i = 0; i < NUM_DIGITS*REFRESH_CLKS*3; i = i + 1) begin
                 @(posedge clk); #1;
-                d = seg_to_digit(seg);
-                if (an[0]) begin o = d; got_o = 1'b1; end
-                if (an[1]) begin t = d; got_t = 1'b1; end
-                if (an[2]) begin h = d; got_h = 1'b1; end
+                lo_lit = (ssd_lo_seg != 7'b0);
+                hi_lit = (ssd_hi_seg != 7'b0);
+                if (lo_lit && hi_lit)   bad = bad + 1;   // two digits lit at once
+                if (hi_lit && ssd_hi_c) bad = bad + 1;   // unused left digit lit
+                if (lo_lit && !ssd_lo_c) begin o = seg_to_digit(ssd_lo_seg); got_o = 1'b1; end
+                if (lo_lit &&  ssd_lo_c) begin t = seg_to_digit(ssd_lo_seg); got_t = 1'b1; end
+                if (hi_lit && !ssd_hi_c) begin h = seg_to_digit(ssd_hi_seg); got_h = 1'b1; end
             end
             if (!got_h || !got_t || !got_o)
                 $display("  WARN: not all digits sampled (h=%b t=%b o=%b)",
                          got_h, got_t, got_o);
+            check(bad == 0, "one digit lit at a time; SSD #2 left digit dark");
             value = h*100 + t*10 + o;
         end
     endtask
@@ -241,7 +256,7 @@ module top_tb;
         $display("\n==== SCENARIO 1: NORMAL TRIAL ====");
         scn_errors = errors;
         check(dut.u_fsm.state === IDLE, "reset -> IDLE");
-        check(an === {NUM_DIGITS{1'b0}}, "display blanked in IDLE");
+        check(display_dark === 1'b1, "display blanked in IDLE");
 
         run_normal_trial(60, meas1);
 
@@ -266,7 +281,7 @@ module top_tb;
         wait_for_state(IDLE);
         check(dut.u_fsm.state === IDLE, "FALSE_START -> IDLE (clean reset)");
         check(led_false_start === 1'b0, "false-start LED cleared in IDLE");
-        check(an === {NUM_DIGITS{1'b0}}, "display blanked after false start");
+        check(display_dark === 1'b1, "display blanked after false start");
         if (scn_errors == errors) $display("SCENARIO 2: PASS"); else $display("SCENARIO 2: FAIL");
 
         // =================================================================
@@ -282,7 +297,7 @@ module top_tb;
         // clears via synchronous reset in IDLE, so allow a couple of cycles.
         repeat (3) @(posedge clk); #1;
         check(dut.ms_elapsed === {MS_WIDTH{1'b0}}, "counter cleared for re-arm");
-        check(an === {NUM_DIGITS{1'b0}}, "display blanked between trials");
+        check(display_dark === 1'b1, "display blanked between trials");
 
         // Trial B (different reaction time) should measure independently.
         $display("  -- trial B --");

@@ -53,6 +53,12 @@ vlog ../tb/fsm_controller_tb.v
 vsim -c -onfinish stop work.fsm_controller_tb
 run -all
 
+# --- Pmod SSD adapter -------------------------------------------------------
+vlog ../rtl/pmodssd_adapter.v
+vlog ../tb/pmodssd_adapter_tb.v
+vsim -c -onfinish stop work.pmodssd_adapter_tb
+run -all
+
 # --- Top-level integration --------------------------------------------------
 vlog ../rtl/top.v
 vlog ../tb/top_tb.v
